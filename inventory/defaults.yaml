@@ -1,0 +1,11 @@
+---
+# Credentials are injected at runtime from environment variables (see core/engine.py).
+# Keeping them out of YAML prevents secrets from landing in git.
+platform: cisco_iosxe
+port: 22
+connection_options:
+  scrapli:
+    platform: cisco_iosxe
+    extras:
+      transport: asyncssh
+      auth_strict_key: false

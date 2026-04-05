@@ -1,0 +1,15 @@
+---
+core:
+  platform: cisco_iosxe
+  connection_options:
+    scrapli:
+      platform: cisco_iosxe
+      port: 22
+      extras:
+        transport: asyncssh
+        auth_strict_key: false
+        timeout_socket: 15
+        timeout_transport: 15
+        timeout_ops: 30
+  data:
+    tier: core

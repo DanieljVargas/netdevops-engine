@@ -1,0 +1,19 @@
+---
+# Sample topology — two Cisco IOS core routers.
+# Hostnames/IPs are lab placeholders; update for your environment.
+
+core-rtr-01:
+  hostname: 192.0.2.11
+  groups:
+    - core
+  data:
+    site: hq
+    role: core-router
+
+core-rtr-02:
+  hostname: 192.0.2.12
+  groups:
+    - core
+  data:
+    site: hq
+    role: core-router

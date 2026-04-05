@@ -1,0 +1,17 @@
+# Core orchestration
+nornir>=3.4.1,<4.0.0
+
+# Async SSH/Telnet transport + Nornir bindings
+scrapli>=2024.1.30
+scrapli[asyncssh]>=2024.1.30
+nornir_scrapli>=2024.1.30
+
+# Data validation / settings
+pydantic>=2.6.0,<3.0.0
+
+# Env + output
+python-dotenv>=1.0.1
+rich>=13.7.0
+
+# YAML parsing (explicit pin — nornir pulls ruamel, but we read YAML directly for validation)
+PyYAML>=6.0.1
