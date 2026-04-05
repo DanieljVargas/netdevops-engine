@@ -2,44 +2,42 @@
 
 A production-ready, **async** network orchestration engine built on
 [Nornir](https://nornir.readthedocs.io/), [scrapli](https://carlmontanari.github.io/scrapli/),
-[Pydantic v2](https://docs.pydantic.dev/) and [Rich](https://rich.readthedocs.io/).
+[Pydantic v2](https://docs.pydantic.dev/), [TextFSM (ntc-templates)](https://github.com/networktocode/ntc-templates) and [Rich](https://rich.readthedocs.io/).
 
-The engine strictly validates your device inventory *before* touching the
-network, loads credentials securely from the environment, and fans out
-commands concurrently over async SSH — rendering results in a clean,
-colourised terminal UI.
+The engine strictly validates your device inventory _before_ touching the
+network, loads credentials securely from the environment, fans out
+commands concurrently over SSH, and intelligently parses raw CLI output into structured Python data — rendering results in a clean, colourised terminal UI.
 
 ---
 
 ## Features
 
-- **Strict inventory validation** — Pydantic v2 models enforce valid IPv4
+- **Strict Inventory Validation** — Pydantic v2 models enforce valid IPv4
   management addresses, supported platforms, and group referential integrity
   at load time. Bad inventory fails fast, not mid-change-window.
-- **Async transport** — scrapli's `asyncssh` transport drives true concurrent
-  I/O against every target; the threaded Nornir runner manages the event
-  loops per worker.
-- **Secret-free YAML** — credentials never live in inventory files. They are
+- **Intelligent Parsing (TextFSM)** — Automatically converts raw CLI text into structured data (JSON/Dictionaries) using `ntc-templates`. If a template fails, it degrades gracefully to raw text.
+- **Robust Transport** — Uses `paramiko` via Scrapli for maximum compatibility across Windows, Linux, and WSL environments while maintaining Nornir's threaded concurrency.
+- **Secret-free YAML** — Credentials never live in inventory files. They are
   injected at runtime from `NET_USER` / `NET_PASS` via `python-dotenv`.
-- **Rich CLI** — inventory summary tables, per-host status, colourised
-  success/failure breakdown, optional full raw-output panels.
+- **Rich CLI Subcommands** — Clean interface for validation, raw execution, and specific parsed audits (e.g., finding down interfaces).
 
 ---
 
 ## Project Layout
 
-```
+```text
 netdevops_engine/
 ├── core/
 │   ├── __init__.py
 │   ├── engine.py        # Nornir init, credential loading, async task runner
-│   └── models.py        # Pydantic v2 inventory schema + loader
+│   ├── models.py        # Pydantic v2 inventory schema + loader
+│   └── parser.py        # TextFSM intelligence layer for CLI parsing
 ├── inventory/
 │   ├── defaults.yaml
 │   ├── groups.yaml
 │   └── hosts.yaml
 ├── .env.example
-├── main.py              # CLI entry point (argparse + rich)
+├── main.py              # CLI entry point with subcommands
 ├── requirements.txt
 └── README.md
 ```
@@ -57,15 +55,17 @@ netdevops_engine/
 
 ```bash
 # 1. Clone / enter the project
+git clone <your-repo-url>
 cd netdevops_engine
 
-# 2. Create and activate a virtual environment
+# 2. Create and activate a virtual environment (Linux/WSL recommended)
 python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 
 # 3. Install dependencies
 pip install --upgrade pip
 pip install -r requirements.txt
+pip install scrapli[paramiko]
 ```
 
 ---
@@ -115,9 +115,8 @@ core:
   platform: cisco_iosxe
   connection_options:
     scrapli:
-      platform: cisco_iosxe
       extras:
-        transport: asyncssh
+        transport: paramiko # Highly recommended for cross-OS compatibility
         auth_strict_key: false
 ```
 
@@ -128,77 +127,59 @@ Supported `platform` values: `cisco_iosxe`, `cisco_nxos`, `cisco_iosxr`,
 
 ## Running
 
-All commands are run from inside the `netdevops_engine/` directory.
+The CLI uses a subcommand architecture. All commands are run from inside the `netdevops_engine/` directory.
 
-### Validate only (no device connections)
+### 1. Validate only (no device connections)
+
+Confirms the inventory parses, every IP is valid, every referenced group exists, and credentials are loadable.
 
 ```bash
+python main.py validate
+# or
 python main.py --validate-only
 ```
 
-Confirms the inventory parses, every IP is valid, every platform is
-supported, every referenced group exists, and credentials are loadable.
+### 2. Run a raw command (e.g., `show version`)
 
-### Run `show version` against every host
-
-```bash
-python main.py
-```
-
-### Run a custom command against a single group, with full output
+Executes a read-only command concurrently and returns raw CLI output.
 
 ```bash
-python main.py -c "show ip interface brief" -g core -v
+python main.py run -c "show version"
+python main.py run -c "show ip route" -g core -v
 ```
 
-### Full CLI reference
+### 3. Intelligent Audit (TextFSM Parsing)
 
-```text
-usage: netdevops-engine [-h] [-c COMMAND] [-g GROUP] [-i INVENTORY]
-                        [-w WORKERS] [--validate-only] [-v]
+Runs `show ip interface brief`, parses the output automatically, and renders a filtered table showing **ONLY** interfaces that are physically or administratively down.
 
-options:
-  -h, --help            show this help message and exit
-  -c, --command         Read-only CLI command to execute (default: 'show version')
-  -g, --group           Restrict execution to hosts in this Nornir group
-  -i, --inventory       Path to inventory directory
-  -w, --workers         Number of concurrent workers (default: 10)
-  --validate-only       Validate inventory and credentials, then exit
-  -v, --verbose         Print full raw device output for every host
+```bash
+python main.py parse-interfaces
+python main.py parse-interfaces -g core
 ```
 
 ---
 
 ## Exit Codes
 
-| Code | Meaning                                               |
-|------|-------------------------------------------------------|
-| `0`  | All targeted hosts succeeded                          |
-| `1`  | One or more hosts failed during execution             |
-| `2`  | Pre-flight failure (bad inventory, missing creds, …)  |
+| Code | Meaning                                              |
+| ---- | ---------------------------------------------------- |
+| `0`  | All targeted hosts succeeded                         |
+| `1`  | One or more hosts failed during execution            |
+| `2`  | Pre-flight failure (bad inventory, missing creds, …) |
 
 These make the engine safe to wire into CI/CD pipelines and pre-change
 validation gates.
 
 ---
 
-## How the Async Execution Works
-
-Nornir's `threaded` runner spawns `-w` worker threads. Each worker picks up a
-host and invokes `nornir_scrapli.tasks.send_command`. Because every host's
-scrapli connection is configured with `transport: asyncssh`, scrapli spins up
-an asyncio event loop inside the worker and drives the SSH session
-non-blockingly — so you get concurrent device I/O without managing
-`asyncio.gather()` yourself, while keeping Nornir's inventory, filtering and
-result-aggregation ergonomics.
-
----
-
 ## Extending
 
-- Add new device groups in `inventory/groups.yaml` — the Pydantic layer will
-  reject any unsupported `platform` automatically.
-- Add new orchestration tasks in `core/engine.py` following the
-  `_task_show_version` pattern, then expose them via `main.py`.
-- Tighten or relax validation in `core/models.py` (e.g. allow DNS hostnames
-  by swapping `IPv4Address` for a custom validator).
+- **New Devices:** Add new device groups in `inventory/groups.yaml` — the Pydantic layer will reject any unsupported `platform` automatically.
+- **New Parsed Audits:** Create a new subcommand in `main.py` that leverages `run_and_parse()` from `core.engine` to build custom logic (e.g., parsing BGP neighbors or OSPF states).
+- **Validation Rules:** Tighten or relax validation in `core/models.py` (e.g. allow DNS hostnames by swapping `IPv4Address` for a custom validator).
+
+## Author
+
+Daniel Vargas — MikroTik Certified Network Engineer (MTCINE)  
+[Upwork Profile](https://www.upwork.com/freelancers/~01c1996b74e4505213?mp_source=share)
+[LinkedIn](www.linkedin.com/in/daniel-vargas-avila)
