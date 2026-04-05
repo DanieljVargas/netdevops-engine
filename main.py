@@ -27,6 +27,9 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.traceback import install as install_rich_traceback
 
+# Importamos la tarea nativa de Scrapli correctamente
+from nornir_scrapli.tasks import send_command
+
 from core.engine import (
     DEFAULT_INVENTORY_DIR,
     ExecutionReport,
@@ -35,6 +38,7 @@ from core.engine import (
     init_engine,
     run_and_parse,
     run_show_version,
+    export_structured_data,
 )
 from core.models import Inventory
 
@@ -109,6 +113,16 @@ def build_parser() -> argparse.ArgumentParser:
              "and display interfaces that are down.",
     )
     _add_common_args(pi_p)
+
+    # --- NUEVO COMANDO: AUDIT (Extracción Inteligente y Exportación) ---
+    audit_parser = subs.add_parser(
+        "audit", 
+        help="Ejecuta comando, parsea con TextFSM y exporta a CSV o JSON"
+    )
+    audit_parser.add_argument("-c", "--command", required=True, help="Comando a parsear (ej. 'show inventory')")
+    audit_parser.add_argument("--csv", help="Exportar a CSV (escribe el nombre del archivo sin el .csv)")
+    audit_parser.add_argument("--json", help="Exportar a JSON (escribe el nombre del archivo sin el .json)")
+    _add_common_args(audit_parser)
 
     return parser
 
@@ -226,8 +240,6 @@ def render_parsed_interfaces(report: ParsedReport, verbose: bool) -> None:
             continue
 
         # Filter: keep only rows where status or protocol is down.
-        # ntc-templates keys for cisco_ios_show_ip_interface_brief:
-        #   intf, ipaddr, status, proto  (may vary slightly by template version)
         down_rows: list[dict] = []
         for row in hr.structured_data:
             status = str(row.get("status", "")).strip().lower()
@@ -331,8 +343,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # ---- Initialise ----
-    # --validate-only can be used without a subcommand; supply defaults for
-    # flags that only subcommand parsers add.
     if not hasattr(args, "inventory"):
         args.inventory = DEFAULT_INVENTORY_DIR
     if not hasattr(args, "workers"):
@@ -364,8 +374,40 @@ def main(argv: list[str] | None = None) -> int:
             report = run_show_version(nr, command=args.command, group=args.group)
         render_report(report, verbose=args.verbose)
         return 0 if report.all_succeeded else 1
+    
+    elif args.action == "audit":
+        console.print(f"\n[bold blue]Auditoría Estructurada:[/bold blue] {args.command}")
+        
+        target = nr.filter(filter_func=lambda h: args.group in h.groups) if args.group else nr
+        
+        with console.status(f"[cyan]Ejecutando y parseando '{args.command}' en {target_desc}...[/cyan]"):
+            results = target.run(task=send_command, command=args.command)
+        
+        exported = False
+        if args.csv:
+            file_path = export_structured_data(results, filename=args.csv, file_format="csv")
+            if file_path:
+                console.print(f"[bold green]✔ Datos exportados a: {file_path}[/bold green]")
+                exported = True
+            else:
+                console.print("[bold red]✖ No se pudo parsear el comando para CSV.[/bold red]")
+                
+        if args.json:
+            file_path = export_structured_data(results, filename=args.json, file_format="json")
+            if file_path:
+                console.print(f"[bold green]✔ Datos exportados a: {file_path}[/bold green]")
+                exported = True
+            else:
+                console.print("[bold red]✖ No se pudo parsear el comando para JSON.[/bold red]")
+                
+        if not exported and (args.csv or args.json):
+            console.print("[yellow]Asegúrate de que existe un template de TextFSM para este comando.[/yellow]")
+        elif not args.csv and not args.json:
+            console.print("[yellow]⚠ Comando ejecutado, pero no especificaste --csv o --json para exportar.[/yellow]")
+            
+        return 0
 
-    if args.action == "parse-interfaces":
+    elif args.action == "parse-interfaces":
         cmd = "show ip interface brief"
         with console.status(
             f"[cyan]Executing + parsing [bold]'{cmd}'[/bold] against {target_desc} "

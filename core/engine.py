@@ -21,6 +21,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+import csv
+import json
 
 from dotenv import load_dotenv
 from nornir import InitNornir
@@ -240,3 +242,50 @@ def run_show_version(
     target = nr.filter(filter_func=lambda h: group in h.groups) if group else nr
     agg = target.run(task=_task_show_version, command=command)
     return _normalise_results(target, agg, command)
+
+def export_structured_data(nornir_results, filename="export", file_format="csv"):
+    """
+    Toma los resultados asíncronos de Nornir, extrae la data estructurada de TextFSM
+    vía Scrapli, y genera un archivo CSV o JSON consolidado.
+    """
+    flat_records = []
+
+    for host, multi_result in nornir_results.items():
+        if multi_result.failed:
+            continue
+
+        # Extraemos la respuesta nativa de Scrapli
+        scrapli_resp = multi_result[0].scrapli_response
+        
+        try:
+            # Magia pura: Scrapli parsea el texto crudo automáticamente usando ntc-templates
+            parsed_data = scrapli_resp.textfsm_parse_output()
+            
+            if isinstance(parsed_data, list):
+                for item in parsed_data:
+                    row = {"Host": host}
+                    row.update(item)
+                    flat_records.append(row)
+            elif isinstance(parsed_data, dict):
+                row = {"Host": host}
+                row.update(parsed_data)
+                flat_records.append(row)
+        except Exception:
+            # Si el comando no tiene un template en TextFSM, lo ignoramos silenciosamente
+            pass
+
+    if not flat_records:
+        return False
+
+    if file_format == "csv":
+        headers = list(flat_records[0].keys())
+        with open(f"{filename}.csv", "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=headers)
+            writer.writeheader()
+            writer.writerows(flat_records)
+        return f"{filename}.csv"
+    
+    elif file_format == "json":
+        with open(f"{filename}.json", "w", encoding="utf-8") as f:
+            json.dump(flat_records, f, indent=4)
+        return f"{filename}.json"
